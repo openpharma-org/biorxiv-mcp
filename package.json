@@ -1,0 +1,34 @@
+{
+  "name": "biorxiv-mcp-server",
+  "version": "1.0.0",
+  "description": "Model Context Protocol server for bioRxiv/medRxiv preprint databases",
+  "main": "build/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc && chmod +x build/index.js",
+    "dev": "tsc --watch",
+    "start": "node build/index.js"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "biorxiv",
+    "medrxiv",
+    "preprints",
+    "biology",
+    "medicine"
+  ],
+  "author": "OpenPharma Contributors",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.25.1",
+    "axios": "^1.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
