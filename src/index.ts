@@ -213,21 +213,94 @@ class BioRxivServer {
   }
 
   // ---------------------------------------------------------------------------
-  // search_preprints — client-side keyword filter over date-range browsing
+  // search_preprints — uses EuropePMC for fast keyword search, falls back to
+  // client-side filtering over bioRxiv date-range API if EuropePMC fails.
+  //
+  // EuropePMC indexes bioRxiv/medRxiv preprints and provides a proper search
+  // API (~0.1s) vs the old approach of downloading 300 preprints and filtering
+  // locally (~50s).
   // ---------------------------------------------------------------------------
   private async searchPreprints(args: Record<string, unknown>) {
     const query = args.query as string;
     if (!query) throw new McpError(ErrorCode.InvalidParams, '"query" is required for search_preprints');
 
     const srv = (args.server as string) || 'biorxiv';
-    const dateFrom = (args.date_from as string) || this.daysAgo(30);
-    const dateTo = (args.date_to as string) || this.today();
+    const dateFrom = (args.date_from as string) || undefined;
+    const dateTo = (args.date_to as string) || undefined;
     const category = args.category as string | undefined;
     const limit = (args.limit as number) || 30;
-    const queryLower = query.toLowerCase();
 
+    // Try EuropePMC first (fast keyword search)
+    try {
+      const results = await this.searchViaEuropePMC(query, srv, limit, dateFrom, dateTo, category);
+      if (results.length > 0) {
+        return this.ok({
+          query,
+          server: srv,
+          date_range: { from: dateFrom || 'all', to: dateTo || 'today' },
+          category: category || null,
+          count: results.length,
+          preprints: results,
+        });
+      }
+    } catch (err) {
+      // EuropePMC failed, fall through to legacy approach
+      console.error(`[bioRxiv] EuropePMC search failed, using legacy: ${err}`);
+    }
+
+    // Fallback: client-side keyword filter over bioRxiv date-range API
+    return this.searchPreprintsLegacy(query, srv, dateFrom || this.daysAgo(30), dateTo || this.today(), category, limit);
+  }
+
+  private async searchViaEuropePMC(
+    query: string,
+    server: string,
+    limit: number,
+    dateFrom?: string,
+    dateTo?: string,
+    category?: string,
+  ): Promise<any[]> {
+    // Build EuropePMC query: keyword + preprint source + publisher filter
+    const publisher = server === 'medrxiv' ? 'medRxiv' : 'bioRxiv';
+    let epQuery = `${query} (SRC:PPR AND PUBLISHER:"${publisher}")`;
+
+    // Add date filter if specified
+    if (dateFrom || dateTo) {
+      const from = dateFrom || '2000-01-01';
+      const to = dateTo || this.today();
+      epQuery += ` AND (FIRST_PDATE:[${from} TO ${to}])`;
+    }
+
+    const pageSize = Math.min(limit, 100);
+    const url = `https://www.ebi.ac.uk/europepmc/webservices/rest/search`
+      + `?query=${encodeURIComponent(epQuery)}`
+      + `&format=json&pageSize=${pageSize}&resultType=core`;
+
+    const resp = await axios.get(url, { timeout: 15000 });
+    const results = resp.data?.resultList?.result || [];
+
+    return results.map((r: any) => ({
+      doi: r.doi || '',
+      title: (r.title || '').replace(/<\/?[^>]+>/g, ''),  // Strip HTML tags
+      authors: r.authorString || '',
+      date: r.firstPublicationDate || '',
+      category: category || '',
+      abstract: ((r.abstractText || '').replace(/<\/?[^>]+>/g, '')).slice(0, 500),
+      version: '1',
+      author_corresponding: (r.authorList?.author?.[0]?.fullName) || '',
+      author_corresponding_institution: r.affiliation || '',
+      published: null,
+      europepmc_id: r.id || '',
+    }));
+  }
+
+  private async searchPreprintsLegacy(
+    query: string, srv: string, dateFrom: string, dateTo: string,
+    category: string | undefined, limit: number
+  ) {
+    const queryLower = query.toLowerCase();
     const matched: any[] = [];
-    const maxPages = 3; // Cap at 300 results scanned
+    const maxPages = 3;
 
     for (let page = 0; page < maxPages; page++) {
       const cursor = page * 100;
@@ -261,7 +334,6 @@ class BioRxivServer {
       }
 
       if (matched.length >= limit) break;
-      // If we got less than 100 results, no more pages
       if (collection.length < 100) break;
     }
 
